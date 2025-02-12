@@ -88,6 +88,9 @@ po::options_description globalDesc("panmanUtils Command Line Arguments");
 po::positional_options_description globalPositionArgumentDesc;
 
 // program option descriptions of various command line functions
+po::options_description blockRangesDesc("Block Ranges Command Line Arguments");
+po::options_description fastaSubsetDesc("FASTA Subset Command Line Arguments");
+
 po::options_description summaryDesc("Summary Command Line Arguments");
 po::options_description useDesc("Use Command Line Arguments");
 po::options_description fastaDesc("FASTA Command Line Arguments");
@@ -138,6 +141,11 @@ void setupOptionDescriptions() {
 
     // ("optimize", "currently UNSUPPORTED: whether given msa file should be optimized or not")
 
+    ("block-ranges,B", "Print block ranges")
+    ("fasta-subset,F", "Print subset of sequences (FASTA & FASTAGS format)")
+    ("num-subset,S", po::value<int64_t>(), "Number of nodes to subset")
+    ("subset-pairs-file,P", po::value<std::string>(), "File containing pairs of nodes to subset")
+
     ("summary,s", "Print PanMAN summary")
     ("newick,t", "Print newick string of all trees in a PanMAN")
     ("fasta,f", "Print tip sequences (FASTA format)")
@@ -182,6 +190,14 @@ void setupOptionDescriptions() {
     ("help", "produce help message")
     ("index", po::value< size_t >()->required(), "PanMAT index")
     ;
+
+    blockRangesDesc.add_options()
+        ("output-file,o", po::value< std::string >(), "Output file name");
+    
+    fastaSubsetDesc.add_options()
+        ("num-subset,S", po::value<int64_t>(), "Number of nodes to subset")
+        ("subset-pairs-file,P", po::value<std::string>(), "File containing pairs of nodes to subset")
+        ("output-file,o", po::value< std::string >(), "Output file name");
 
     summaryDesc.add_options()
         ("output-file,o", po::value< std::string >(), "Output file name");
@@ -256,6 +272,68 @@ void setupOptionDescriptions() {
     printRootDesc.add_options()
         ("output-file,o", po::value< std::string >(), "Output file name");
 }
+
+void blockRanges(panmanUtils::TreeGroup *TG, po::variables_map &globalVm, std::ofstream &outputFile, std::streambuf * buf) {
+    // If command was block-ranges, print the block ranges of the PanMAT
+    if(TG == nullptr) {
+        std::cout << "No PanMAN selected" << std::endl;
+        return;
+    }
+
+    panmanUtils::TreeGroup tg = *TG;
+
+    auto blockRangesStart = std::chrono::high_resolution_clock::now();
+    for(int i = 0; i < tg.trees.size(); i++) {
+        panmanUtils::Tree *T = &tg.trees[i];
+        if(globalVm.count("output-file")) {
+            std::string fileName = globalVm["output-file"].as< std::string >();
+            outputFile.open("./info/" + fileName + "_" + std::to_string(i) + ".summary");
+            buf = outputFile.rdbuf();
+        } else {
+            buf = std::cout.rdbuf();
+        }
+        std::ostream fout (buf);
+        T->printBlockRanges(fout);
+        if(globalVm.count("output-file")) outputFile.close();
+        break;
+    }
+
+    auto blockRangesEnd = std::chrono::high_resolution_clock::now();
+    std::chrono::nanoseconds blockRangesTime = blockRangesEnd - blockRangesStart;
+    std::cout << "\nBlock Ranges execution time: " << blockRangesTime.count() << " nanoseconds\n";
+}
+
+void fastaSubset(panmanUtils::TreeGroup *TG, po::variables_map &globalVm, std::ofstream &outputFile, std::streambuf * buf) {
+    std::cout << "Printing FASTA Subset" << std::endl;
+    // Print subset of sequences to output file
+    if(TG == nullptr) {
+        std::cout << "No PanMAN selected" << std::endl;
+        return;
+    }
+
+    panmanUtils::TreeGroup tg = *TG;
+
+    auto fastaSubsetStart = std::chrono::high_resolution_clock::now();
+    for(int i = 0; i < tg.trees.size(); i++) {
+        panmanUtils::Tree *T  = &tg.trees[i];
+        std::string subsetPairsFile = "";
+        int64_t numPairs = 100000;
+        if (globalVm.count("subset-pairs-file")) {
+            subsetPairsFile = globalVm["subset-pairs-file"].as<std::string>();
+        }
+        if (globalVm.count("num-subset")) {
+            numPairs = globalVm["num-subset"].as<int64_t>();
+        }
+
+        T->printFASTAUltraFastSubset(numPairs, subsetPairsFile);
+        break;
+    }
+
+    auto fastaSubsetEnd = std::chrono::high_resolution_clock::now();
+    std::chrono::nanoseconds fastaSubsetTime = fastaSubsetEnd - fastaSubsetStart;
+    std::cout << "\nFASTA Subset execution time: " << fastaSubsetTime.count() << " nanoseconds\n";
+}
+
 
 void writePanMAN(po::variables_map &globalVm, panmanUtils::TreeGroup *TG) {
     std::cout << "Writing PanMAN" << std::endl;
@@ -1371,7 +1449,13 @@ void parseAndExecute(int argc, char* argv[]) {
     std::ofstream outputFile;
     std::streambuf * buf;
 
-    if(globalVm.count("summary")) {
+    if(globalVm.count("block-ranges")) {
+        blockRanges(TG, globalVm, outputFile, buf);
+        return;
+    } else if(globalVm.count("fasta-subset")) {
+        fastaSubset(TG, globalVm, outputFile, buf);
+        return;
+    } else if(globalVm.count("summary")) {
         summary(TG, globalVm, outputFile, buf);
         return;
     } else if(globalVm.count("fasta")) {

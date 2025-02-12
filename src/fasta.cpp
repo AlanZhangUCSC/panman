@@ -1982,20 +1982,20 @@ void panmanUtils::Tree::printFASTAUltraFast(std::ostream& fout, bool aligned, bo
 
     std::unordered_map< std::string, std::mutex > nodeMutexes;
     for(auto u: allNodes) {
-        if (u.second->children.size() == 0) {
-            nodeMutexes[u.first];
-        }
+        // if (u.second->children.size() == 0) {
+        nodeMutexes[u.first];
+        // }
     }
 
     std::mutex printMutex;
-	int counting=0;
+	  int counting=0;
     // for (auto &keyValue: allNodes) {
     tbb::parallel_for_each(allNodes.begin(), allNodes.end(), [&](const std::pair<std::string, panmanUtils::Node*>& keyValue) {
         panmanUtils::Node* node = keyValue.second;
         // Create a stringstream for each thread to avoid race conditions on fout
-        if (node->children.size() != 0) {
-            return;
-        }
+        // if (node->children.size() != 0) {
+        //     return;
+        // }
 
         // Get block sequnece of the Tip
         std::vector< bool >  blockSequence(blocks.size() + 1, false, {});
@@ -2390,4 +2390,438 @@ std::pair<std::vector<std::string>, std::vector<int>> panmanUtils::Tree::extract
     }
 
     return extractSequenceHelper(blockSequence, blockLengths, nodesFromTipToRoot, sequence, blockExists, blockStrand, aligned, rootSeq, panMATStart, panMATEnd, allIndex);
+}
+
+std::vector<std::string> selectRandomChildren(size_t numPairs, std::vector<std::pair<std::string, double>>& allNodesVector, const std::unordered_map<std::string, panmanUtils::Node*>& allNodes, std::ofstream& selectedPairsFileStream) {
+  std::vector<std::string> subsetChildren;
+
+  if (numPairs > allNodesVector.size()) {
+    for (size_t i = 0; i < allNodesVector.size(); ++i) {
+      subsetChildren.push_back(allNodesVector[i].first);
+      selectedPairsFileStream << allNodesVector[i].first << "\t" << allNodes.at(allNodesVector[i].first)->parent->identifier << "\n";
+    }
+    return subsetChildren;
+  }
+
+  subsetChildren.reserve(numPairs);
+  std::sort(allNodesVector.begin(), allNodesVector.end(), [](const std::pair<std::string, double>& a, const std::pair<std::string, double>& b) {
+    return a.second < b.second;
+  });
+  for (size_t i = 0; i < numPairs; ++i) {
+    subsetChildren.push_back(allNodesVector[i].first);
+    selectedPairsFileStream << allNodesVector[i].first << "\t" << allNodes.at(allNodesVector[i].first)->parent->identifier << "\n";
+  }
+  return subsetChildren;
+}
+
+std::vector<std::string> loadSubsetPairsFile(std::string subsetPairsFile) {
+  std::vector<std::string> subsetChildren;
+  std::ifstream file(subsetPairsFile);
+  std::string line;
+  while (std::getline(file, line)) {
+    subsetChildren.push_back(line.substr(0, line.find_last_of(' ')));
+  }
+  return subsetChildren;
+}
+
+std::string panmanUtils::Tree::printFASTAGSUltraFastHelper(
+                          const std::vector<bool>& blockSequence,
+                          std::unordered_map<int, int>& blockLengths,
+                          const std::vector<panmanUtils::Node*>& nodesFromTipToRoot, 
+                          std::vector<std::vector<std::pair<char,std::vector<char>>>>& sequence,
+                          std::vector<bool>& blockExists, 
+                          std::vector<bool>& blockStrand, bool aligned, bool rootSeq, const std::tuple< int, int, int, int >& panMATStart, const std::tuple< int, int, int, int >& panMATEnd, bool allIndex) {
+
+  if (!aligned) {
+    throw std::runtime_error("Unaligned FASTAGS generation is not supported.");
+  }
+
+  for (auto node: nodesFromTipToRoot){
+    // Block Mutations
+    for(auto mutation: node->blockMutation) {
+      int32_t primaryBlockId = mutation.primaryBlockId;
+      bool type = mutation.blockMutInfo;
+      bool inversion = mutation.inversion;
+      if (blockSequence[primaryBlockId]) {
+        if(type == 1) {
+          // insertion
+          bool oldStrand;
+          bool oldMut;
+          oldStrand = blockStrand[primaryBlockId];
+          oldMut = blockExists[primaryBlockId];
+          blockExists[primaryBlockId] = true;
+          // if insertion of inverted block takes place, the strand is backwards
+          blockStrand[primaryBlockId] = !inversion;
+        } else {
+          bool oldMut;
+          bool oldStrand;
+          if(inversion) {
+            // This means that this is not a deletion, but instead an inversion
+            oldStrand = blockStrand[primaryBlockId];
+            oldMut = blockExists[primaryBlockId];
+            blockStrand[primaryBlockId] = !oldStrand;
+            if(oldMut != true) {
+              // std::cout << "There was a problem in PanMAT generation. Please Report." << std::endl;
+            }
+          } else {
+            // Actually a deletion
+            oldStrand = blockStrand[primaryBlockId];
+            oldMut = blockExists[primaryBlockId];
+            blockExists[primaryBlockId] = false;
+            // resetting strand to true during deletion
+            blockStrand[primaryBlockId] = true;
+          }
+        }
+      }
+    }
+
+    // Nuc mutations
+    for(size_t i = 0; i < node->nucMutation.size(); i++) {
+      int32_t primaryBlockId = node->nucMutation[i].primaryBlockId;
+      int32_t secondaryBlockId = node->nucMutation[i].secondaryBlockId;
+
+      if (blockSequence[primaryBlockId]) {
+        // if (rootSeq && (primaryBlockId>=std::get<0>(panMATStart) && primaryBlockId<=std::get<0>(panMATEnd)) && (secondaryBlockId<=std::get<1>(panMATStart) && secondaryBlockId<=std::get<1>(panMATEnd)) ) {
+        int32_t nucPosition = node->nucMutation[i].nucPosition;
+        int32_t nucGapPosition = node->nucMutation[i].nucGapPosition;
+        uint32_t type = (node->nucMutation[i].mutInfo & 0x7);
+        char newVal = '-';
+
+        if(type < 3) {
+          // Either S, I or D
+          int len = ((node->nucMutation[i].mutInfo) >> 4);
+
+          if(primaryBlockId >= sequence.size()) {
+            std::cout << primaryBlockId << " " << sequence.size() << std::endl;
+          }
+
+          if(type == panmanUtils::NucMutationType::NS) {
+            // Substitution
+            if(nucGapPosition != -1) {
+              for(int j = 0; j < len; j++) {
+                char oldVal = sequence[primaryBlockId][nucPosition].second[nucGapPosition+j];
+                newVal = panmanUtils::getNucleotideFromCode(((node->nucMutation[i].nucs) >> (4*(5-j))) & 0xF);
+                sequence[primaryBlockId][nucPosition].second[nucGapPosition+j] = newVal;
+              }
+            } else {
+              for(int j = 0; j < len; j++) {
+                char oldVal = sequence[primaryBlockId][nucPosition+j].first;
+                newVal = panmanUtils::getNucleotideFromCode(((node->nucMutation[i].nucs) >> (4*(5-j))) & 0xF);
+                sequence[primaryBlockId][nucPosition+j].first = newVal;
+              }
+            }
+          } else if(type == panmanUtils::NucMutationType::NI) {
+            // Insertion
+            if(nucGapPosition != -1) {
+              for(int j = 0; j < len; j++) {
+                char oldVal = sequence[primaryBlockId][nucPosition].second[nucGapPosition+j];
+                newVal = panmanUtils::getNucleotideFromCode(((node->nucMutation[i].nucs) >> (4*(5-j))) & 0xF);
+                sequence[primaryBlockId][nucPosition].second[nucGapPosition+j] = newVal;
+              }
+            } else {
+              for(int j = 0; j < len; j++) {
+                char oldVal = sequence[primaryBlockId][nucPosition+j].first;
+                newVal = panmanUtils::getNucleotideFromCode(((node->nucMutation[i].nucs) >> (4*(5-j))) & 0xF);
+                sequence[primaryBlockId][nucPosition+j].first = newVal;
+              }
+            }
+          } else if(type == panmanUtils::NucMutationType::ND) {
+            // Deletion
+            if(nucGapPosition != -1) {
+              for(int j = 0; j < len; j++) {
+                char oldVal = sequence[primaryBlockId][nucPosition].second[nucGapPosition+j];
+                sequence[primaryBlockId][nucPosition].second[nucGapPosition+j] = '-';
+              }
+            } else {
+              for(int j = 0; j < len; j++) {
+                char oldVal = sequence[primaryBlockId][nucPosition+j].first;
+                sequence[primaryBlockId][nucPosition+j].first = '-';
+              }
+            }
+          }
+        } else {
+          if(type == panmanUtils::NucMutationType::NSNPS) {
+            // SNP Substitution
+            newVal = panmanUtils::getNucleotideFromCode(((node->nucMutation[i].nucs) >> 20) & 0xF);
+            if(nucGapPosition != -1) {
+              char oldVal = sequence[primaryBlockId][nucPosition].second[nucGapPosition];
+              sequence[primaryBlockId][nucPosition].second[nucGapPosition] = newVal;
+            } else {
+              char oldVal = sequence[primaryBlockId][nucPosition].first;
+              sequence[primaryBlockId][nucPosition].first = newVal;
+            }
+          } else if(type == panmanUtils::NucMutationType::NSNPI) {
+            // SNP Insertion
+            newVal = panmanUtils::getNucleotideFromCode(((node->nucMutation[i].nucs) >> 20) & 0xF);
+            if(nucGapPosition != -1) {
+              char oldVal = sequence[primaryBlockId][nucPosition].second[nucGapPosition];
+              sequence[primaryBlockId][nucPosition].second[nucGapPosition] = newVal;
+            } else {
+              char oldVal = sequence[primaryBlockId][nucPosition].first;
+              sequence[primaryBlockId][nucPosition].first = newVal;
+            }
+          } else if(type == panmanUtils::NucMutationType::NSNPD) {
+            // SNP Deletion
+            if(nucGapPosition != -1) {
+              char oldVal = sequence[primaryBlockId][nucPosition].second[nucGapPosition];
+              sequence[primaryBlockId][nucPosition].second[nucGapPosition] = '-';
+            } else {
+              char oldVal = sequence[primaryBlockId][nucPosition].first;
+              sequence[primaryBlockId][nucPosition].first = '-';
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Store sequence
+  panmanUtils::Node* tipNode = nodesFromTipToRoot[nodesFromTipToRoot.size()-1];
+  std::string line="";
+  line += '>' + tipNode->identifier + '\n';
+
+  int offset = 0;
+  if(!aligned && circularSequences.find(tipNode->identifier) != circularSequences.end()) {
+    // If MSA is to be printed, offset doesn't matter
+    offset = circularSequences[tipNode->identifier];
+  }
+  std::vector< std::vector< std::pair< char, std::vector< char > > > > sequencePrint = sequence;
+  std::vector< bool > blockExistsPrint = blockExists;
+  std::vector< bool > blockStrandPrint = blockStrand;
+
+  if(rotationIndexes.find(tipNode->identifier) != rotationIndexes.end() && rotationIndexes[tipNode->identifier] != 0) {
+    int ctr = -1, rotInd = 0;
+    for(size_t i = 0; i < blockExistsPrint.size(); i++) {
+      if(blockExistsPrint[i]) {
+        ctr++;
+      }
+      if(ctr == rotationIndexes[tipNode->identifier]) {
+        rotInd = i;
+        break;
+      }
+    }
+    // std::cout << "rotating" << std::endl;
+    rotate(sequencePrint.begin(), sequencePrint.begin() + rotInd, sequencePrint.end());
+    rotate(blockExistsPrint.begin(), blockExistsPrint.begin() + rotInd, blockExistsPrint.end());
+    rotate(blockStrandPrint.begin(), blockStrandPrint.begin() + rotInd, blockStrandPrint.end());
+  }
+
+  if(sequenceInverted.find(tipNode->identifier) != sequenceInverted.end() && sequenceInverted[tipNode->identifier]) {
+    // std::cout << "inverting" << std::endl;
+    reverse(sequencePrint.begin(), sequencePrint.end());
+    reverse(blockExistsPrint.begin(), blockExistsPrint.end());
+    reverse(blockStrandPrint.begin(), blockStrandPrint.end());
+  }
+
+  for(size_t i = 0; i < blockExists.size(); i++) {
+    // Non-gap block - the only type being used currently
+    if(blockExists[i]) {
+      // line += ">" + std::to_string(i) + "\n";
+      // If forward strand
+      if(blockStrand[i]) {
+        // Iterate through main nucs
+        for(size_t j = 0; j < sequence[i].size(); j++) {
+          // Gap nucs
+          for(size_t k = 0; k < sequence[i][j].second.size(); k++) {
+            if(sequence[i][j].second[k] != '-') {
+              line += sequence[i][j].second[k];
+            } else if(aligned) {
+              line += '-';
+            }
+          }
+          // Main nuc
+          if(sequence[i][j].first != '-' && sequence[i][j].first != 'x') {
+            line += sequence[i][j].first;
+          } else if(aligned && sequence[i][j].first != 'x') {
+            line += '-';
+          }
+        }
+      } else {
+        // If reverse strand, iterate backwards
+        for(size_t j = sequence[i].size()-1; j+1 > 0; j--) {
+          // Main nuc first since we are iterating in reverse direction
+          if(sequence[i][j].first != '-' && sequence[i][j].first != 'x') {
+            line += getComplementCharacter(sequence[i][j].first);
+          } else if(aligned  && sequence[i][j].first != 'x') {
+            line += '-';
+          }
+
+          // Gap nucs
+          for(size_t k = sequence[i][j].second.size()-1; k+1 > 0; k--) {
+            if(sequence[i][j].second[k] != '-') {
+              line += getComplementCharacter(sequence[i][j].second[k]);
+            } else if(aligned) {
+              line += '-';
+            }
+          }
+        }
+      }
+      line += "\n";
+    } else if(aligned) {
+      // If aligned sequence is required, print gaps instead if block does not exist
+      line += ".\n";
+    }
+  }
+
+  return line;
+}
+
+void panmanUtils::Tree::printFASTAUltraFastSubset(int64_t numPairs, std::string subsetPairsFile, bool rootSeq, const std::tuple<int, int, int, int> &panMATStart, const std::tuple<int, int, int, int> &panMATEnd, bool allIndex) {
+  
+  // Pairs will be children and their parents (skipping root obviously)
+  std::vector<std::string> subsetChildren;
+
+
+  // Randomly select pairs or load from subsetPairsFile, 
+  if (subsetPairsFile.empty()) {
+    std::vector<std::pair<std::string, double>> allNodesVector;
+    for (const auto& node : allNodes) {
+      if (node.second->parent != nullptr) {
+        allNodesVector.push_back(std::make_pair(node.first, static_cast<double>(rand()) / RAND_MAX));
+      }
+    }
+    std::string selectedPairsFile = "info/selected_pairs.tsv";
+    std::ofstream selectedPairsFileStream(selectedPairsFile);
+    subsetChildren = selectRandomChildren(numPairs, allNodesVector, allNodes, selectedPairsFileStream);
+    selectedPairsFileStream.close();
+  } else {
+    subsetChildren = loadSubsetPairsFile(subsetPairsFile);
+  }
+
+
+  std::vector<std::pair<std::string, bool>> nodesToProcess;
+  std::unordered_set<std::string> nodesSeen;
+  for(auto child: subsetChildren) {
+      // if (u.second->children.size() == 0) {
+      std::string parent = allNodes[child]->parent->identifier;
+      
+      if (nodesSeen.find(child) == nodesSeen.end()) {
+        nodesToProcess.push_back(std::make_pair(child, true));
+        nodesToProcess.push_back(std::make_pair(child, false));
+        nodesSeen.insert(child);
+      }
+
+      if (nodesSeen.find(parent) == nodesSeen.end()) {
+        nodesToProcess.push_back(std::make_pair(parent, true));
+        nodesToProcess.push_back(std::make_pair(parent, false));
+        nodesSeen.insert(parent);
+      }
+      // }
+  }
+
+  std::mutex printMutex;
+  int counting=0;
+  // for (auto &keyValue: allNodes) {
+  tbb::parallel_for_each(nodesToProcess.begin(), nodesToProcess.end(), [&](const std::pair<std::string, bool>& keyValue) {
+      // process each node
+      panmanUtils::Node* node = allNodes[keyValue.first];
+      bool aligned = keyValue.second;
+
+      // Get block sequnece of the Tip
+      std::vector< bool >  blockSequence(blocks.size() + 1, false, {});
+      std::vector<panmanUtils::Node*> nodesFromTipToRoot;
+      getNodesFromTipToRoot(node, nodesFromTipToRoot);
+      getBlockSequence(nodesFromTipToRoot, blockSequence);
+
+      // Blocks length
+      std::unordered_map<int, int> blockLengths;
+
+      // Expanding blocks only if exist in tip 
+      std::vector< std::vector< std::pair< char, std::vector< char > > > > sequence(blocks.size() + 1);
+      std::vector< bool >  blockExists(blocks.size() + 1, false, {});
+      std::vector< bool >  blockStrand(blocks.size() + 1, true, {});
+
+
+      int32_t maxBlockId = 0;
+
+      // Create consensus sequence of blocks
+      for(size_t i = 0; i < blocks.size(); i++) {
+          int32_t primaryBlockId = ((int32_t)blocks[i].primaryBlockId);
+          blockLengths[primaryBlockId] = 0;
+          maxBlockId = std::max(maxBlockId, primaryBlockId);
+          if (blockSequence[primaryBlockId]) {
+              // int len = 0;
+              for(size_t j = 0; j < blocks[i].consensusSeq.size(); j++) {
+                  bool endFlag = false;
+                  for(size_t k = 0; k < 8; k++) {
+                      const int nucCode = (((blocks[i].consensusSeq[j]) >> (4*(7 - k))) & 15);
+
+                      if(nucCode == 0) {
+                          endFlag = true;
+                          break;
+                      }
+                      // len++;
+                      const char nucleotide = panmanUtils::getNucleotideFromCode(nucCode);
+                      sequence[primaryBlockId].push_back({nucleotide, {}});
+                  }
+
+                  if(endFlag) {
+                      break;
+                  }
+              }
+              // End character to incorporate for gaps at the end
+              sequence[primaryBlockId].push_back({'x', {}});
+              // blockLengths[primaryBlockId] += len;
+          } else {
+              int len = 0;
+              for(size_t j = 0; j < blocks[i].consensusSeq.size(); j++) {
+                  bool endFlag = false;
+                  for(size_t k = 0; k < 8; k++) {
+                      const int nucCode = (((blocks[i].consensusSeq[j]) >> (4*(7 - k))) & 15);
+                      if(nucCode == 0) {
+                          endFlag = true;
+                          break;
+                      }
+                      len++;
+                      const char nucleotide = panmanUtils::getNucleotideFromCode(nucCode);
+                  }
+
+                  if(endFlag) {
+                      break;
+                  }
+              }
+              blockLengths[primaryBlockId] += len;
+          }
+      }
+
+      sequence.resize(maxBlockId + 1);
+      blockExists.resize(maxBlockId + 1);
+      blockStrand.resize(maxBlockId + 1);
+
+      // Assigning nucleotide gaps in blocks
+      for(size_t i = 0; i < gaps.size(); i++) {
+          int32_t primaryBId = (gaps[i].primaryBlockId);
+          int32_t secondaryBId = (gaps[i].secondaryBlockId);
+          if (blockSequence[primaryBId]){
+              for(size_t j = 0; j < gaps[i].nucPosition.size(); j++) {
+                  int len = gaps[i].nucGapLength[j];
+                  int pos = gaps[i].nucPosition[j];
+                  sequence[primaryBId][pos].second.resize(len, '-');
+                  // blockLengths[primaryBId] += len;
+              }
+          } else {
+              int len=0;
+              for(size_t j = 0; j < gaps[i].nucPosition.size(); j++) {
+                  len += gaps[i].nucGapLength[j];
+              }
+              blockLengths[primaryBId] += len;
+          }
+      }
+
+
+      std::string nodeNameClean = keyValue.first;
+      std::replace_if(nodeNameClean.begin(), nodeNameClean.end(), [](char c) { return !std::isalnum(c); }, '_');
+      
+      if (aligned) {
+        std::string aligned_line = printFASTAGSUltraFastHelper(blockSequence, blockLengths, nodesFromTipToRoot, sequence, blockExists, blockStrand, aligned, rootSeq, panMATStart, panMATEnd, allIndex);
+        std::ofstream alignedFastags("info/" + nodeNameClean + ".aligned.fastags");
+        alignedFastags << aligned_line << "\n";
+        alignedFastags.close();
+      } else {
+        std::string unaligned_line = printFASTAUltraFastHelper(blockSequence, blockLengths, nodesFromTipToRoot, sequence, blockExists, blockStrand, aligned, rootSeq, panMATStart, panMATEnd, allIndex);
+        std::ofstream unalignedFasta("info/" + nodeNameClean + ".unaligned.fasta");
+        unalignedFasta << unaligned_line << "\n";
+        unalignedFasta.close();
+      }
+  });
 }

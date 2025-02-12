@@ -366,7 +366,16 @@ class Tree {
                           std::vector<bool>& blockExists, 
                           std::vector<bool>& blockStrand, 
                           bool aligned = false, bool rootSeq = false, const std::tuple<int, int, int, int> &start = {-1,-1,-1,-1}, const std::tuple<int, int, int, int>& end={-1,-1,-1,-1}, bool allIndex = false);
-    
+
+    std::string printFASTAGSUltraFastHelper(
+                          const std::vector<bool>& blockSequence,
+                          std::unordered_map<int, int>& blockLengths,
+                          const std::vector<panmanUtils::Node*>& nodesFromTipToRoot, 
+                          std::vector<std::vector<std::pair<char,std::vector<char>>>>& sequence,
+                          std::vector<bool>& blockExists, 
+                          std::vector<bool>& blockStrand, bool aligned, bool rootSeq, const std::tuple< int, int, int, int >& panMATStart, const std::tuple< int, int, int, int >& panMATEnd, bool allIndex);
+
+
     std::pair<std::vector<std::string>, std::vector<int>> extractSequenceHelper(
                           const std::vector<bool>& blockSequence,
                           std::unordered_map<int, int>& blockLengths,
@@ -529,6 +538,9 @@ class Tree {
                                      std::pair< panmanUtils::BlockMutationType, bool > >& mutations, int parentState);
 
     // void printSummary();
+    void printBlockRanges(std::ostream &out);
+    void printFASTAUltraFastSubset(int64_t numPairs=100000, std::string subsetPairsFile="", bool rootSeq = false, const std::tuple<int, int, int, int> &start={-1,-1,-1,-1}, const std::tuple<int, int, int, int> &end={-1,-1,-1,-1}, bool allIndex = false);
+
     void printSummary(std::ostream &out);
     void printBfs(Node* node = nullptr);
     void printFASTA(std::ostream& fout, bool aligned = false, bool rootSeq = false, const std::tuple<int, int, int, int> &start={-1,-1,-1,-1}, const std::tuple<int, int, int, int> &end={-1,-1,-1,-1}, bool allIndex = false);

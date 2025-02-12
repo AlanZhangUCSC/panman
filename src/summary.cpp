@@ -271,3 +271,13 @@ void panmanUtils::Tree::printSummary(std::ostream &out) {
     getBlockMutationsParallel();
 
 }
+
+void panmanUtils::Tree::printBlockRanges(std::ostream &out) {
+  size_t currentBlockBeg = 0;
+  size_t currentBlockEnd = 0;
+  for(auto i=0; i<blocks.size(); i++) {
+    currentBlockEnd = currentBlockBeg + blocks[i].consensusSeq.size() - 1;
+    out << currentBlockBeg << "\t" << currentBlockEnd << "\n";
+    currentBlockBeg = currentBlockEnd + 1;
+  }
+}
