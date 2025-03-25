@@ -94,6 +94,7 @@ po::options_description fastaSubsetDesc("FASTA Subset Command Line Arguments");
 po::options_description summaryDesc("Summary Command Line Arguments");
 po::options_description useDesc("Use Command Line Arguments");
 po::options_description imputeDesc("Imputation Command Line Arguments");
+po::options_description missingDataSummaryDesc("Missing Data Summary Command Line Arguments");
 po::options_description fastaDesc("FASTA Command Line Arguments");
 po::positional_options_description fastaPositionArgumentDesc;
 po::options_description fastaAlignDesc("FASTA Command Line Arguments");
@@ -151,6 +152,7 @@ void setupOptionDescriptions() {
 
     ("printTips", po::value< std::string >(),"Print PanMAN summary")
     ("summary,s", "Print PanMAN summary")
+    ("missing-data-summary", "Print missing data summary")
     ("newick,t", "Print newick string of all trees in a PanMAN")
     ("fasta,f", "Print tip sequences (FASTA format)")
     // ("fasta-fast", "Print tip/internal sequences (FASTA format)")
@@ -201,11 +203,16 @@ void setupOptionDescriptions() {
     
     fastaSubsetDesc.add_options()
         ("num-subset,S", po::value<int64_t>(), "Number of nodes to subset")
-        ("subset-pairs-file,P", po::value<std::string>(), "File containing pairs of nodes to subset")
+        ("subset-pairs-file,P", po::value<std::string>(), "File containing pairs of nodes to subset");
+        
     imputeDesc.add_options()
         ("input-file", po::value< std::string >(), "Input file name")
         ("max-insertion-impute-distance,D", po::value< int64_t >(), 
         "Maximum total branch length to move a node for insertion imputation [default 5]")
+        ("output-file,o", po::value< std::string >(), "Output file name");
+
+    missingDataSummaryDesc.add_options()
+        ("input-file", po::value< std::string >(), "Input file name")
         ("output-file,o", po::value< std::string >(), "Output file name");
 
     summaryDesc.add_options()
@@ -427,6 +434,35 @@ void impute(panmanUtils::TreeGroup *TG, po::variables_map &globalVm, std::ofstre
     std::cout << "\nImputation time: " << imputeTime.count() << " nanoseconds\n";
 
     writePanMAN(globalVm, &tg);
+}
+
+void missingDataSummary(panmanUtils::TreeGroup *TG, po::variables_map &globalVm, std::ofstream &outputFile, std::streambuf * buf) {
+    // If command was missing-data-summary, print the summary of the PanMAT
+    if(TG == nullptr) {
+        std::cout << "No PanMAN selected" << std::endl;
+        return;
+    }
+
+    panmanUtils::TreeGroup tg = *TG;
+
+    auto missingDataSummaryStart = std::chrono::high_resolution_clock::now();
+    for(int i = 0; i < tg.trees.size(); i++) {
+        panmanUtils::Tree *T = &tg.trees[i];
+        if(globalVm.count("output-file")) {
+            std::string fileName = globalVm["output-file"].as< std::string >();
+            outputFile.open("./info/" + fileName + "_" + std::to_string(i) + ".missing_data.summary");
+            buf = outputFile.rdbuf();
+        } else {
+            buf = std::cout.rdbuf();
+        }
+        std::ostream fout (buf);
+        T->missingDataSummary(fout);
+        if(globalVm.count("output-file")) outputFile.close();
+    }
+
+    auto missingDataSummaryEnd = std::chrono::high_resolution_clock::now();
+    std::chrono::nanoseconds missingDataSummaryTime = missingDataSummaryEnd - missingDataSummaryStart;
+    std::cout << "\nMissing data summary time: " << missingDataSummaryTime.count() << " nanoseconds\n";
 }
 
 void summary(panmanUtils::TreeGroup *TG, po::variables_map &globalVm, std::ofstream &outputFile, std::streambuf * buf) {
@@ -1571,6 +1607,9 @@ void parseAndExecute(int argc, char* argv[]) {
     } else if (globalVm.count("impute")) {
         impute(TG, globalVm, outputFile, buf);
         return;
+    } else if(globalVm.count("missing-data-summary")) {
+        missingDataSummary(TG, globalVm, outputFile, buf);
+        return;
     } else if(globalVm.count("fasta")) {
         fasta(TG, globalVm, outputFile, buf);
         return;
@@ -1659,6 +1698,12 @@ void parseAndExecute(int argc, char* argv[]) {
                         .run(), imputeVm);
 
                    impute(TG, imputeVm, outputFile, buf);
+                } else if(strcmp(splitCommandArray[0], "missing-data-summary") == 0) {
+                    po::variables_map missingDataSummaryVm;
+                    po::store(po::command_line_parser((int)splitCommand.size(), splitCommandArray)
+                        .options(missingDataSummaryDesc)
+                        .run(), missingDataSummaryVm);
+                    missingDataSummary(TG, missingDataSummaryVm, outputFile, buf);
                 } else if(strcmp(splitCommandArray[0], "summary") == 0) {
                     po::variables_map summaryVm;
                     po::store(po::command_line_parser((int)splitCommand.size(), splitCommandArray)

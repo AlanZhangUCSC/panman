@@ -356,3 +356,372 @@ bool panmanUtils::Tree::moveNode(panmanUtils::Node* toMove, panmanUtils::Node* n
     toMove->nucMutation = newMuts.nucMutation;
     toMove->blockMutation = newMuts.blockMutation;
 }
+
+
+void missingDataSummaryHelper(
+  panmanUtils::Node* node, uint32_t& dfsIndex, sequence_t& curSequence, blockExists_t& blockExists, blockStrand_t& blockStrand,
+  std::vector<std::unordered_set<panmanUtils::Coordinate>>& isMissingDataByBlock, 
+  std::unordered_map<panmanUtils::Coordinate, std::vector<panmanUtils::Node*>>& missingDataByCoordinate,
+  std::vector<std::pair<panmanUtils::Node*, panmanUtils::Coordinate>>& subsitutionsToMissingData
+) {
+  if (node == nullptr) return;
+
+  // std::vector<std::pair<coordinate object, original nucleotide code>>
+  std::vector<std::pair<panmanUtils::Coordinate, int8_t>> nucBacktrack;
+
+  // std::vector<std::pair<coordinate object, old is missing data>>
+  std::vector<std::pair<std::pair<panmanUtils::Coordinate, bool>, int32_t>> isMissingDataBacktrack;
+
+  for (const auto& curNucMut: node->nucMutation) {
+    for (int i = 0; i < curNucMut.length(); i++) {
+      panmanUtils::Coordinate curPos = panmanUtils::Coordinate(curNucMut, i);
+      const auto& curPosPrimaryBlockId = curPos.primaryBlockId;
+      const auto& curPosSecondaryBlockId = curPos.secondaryBlockId;
+      char originalNuc = curPos.getSequenceBase(curSequence);
+      int8_t originalNucCode = panmanUtils::getCodeFromNucleotide(originalNuc);
+      int8_t curNucCode = curNucMut.getNucCode(i);
+
+      if (originalNucCode == curNucCode) {
+        continue;
+      }
+
+      // std::cout << curPos.primaryBlockId << ":" << curPos.secondaryBlockId << ":" << curPos.nucPosition << ":" << curPos.nucGapPosition << " " << originalNucCode << "/" << originalNuc << " -> " << curNucCode << "/" << panmanUtils::getNucleotideFromCode(curNucMut.getNucCode(i)) << std::endl;
+
+      if (curNucCode == panmanUtils::NucCode::N) {
+        subsitutionsToMissingData.emplace_back(node, curPos);
+        if (isMissingDataByBlock[curPosPrimaryBlockId].find(curPos) != isMissingDataByBlock[curPosPrimaryBlockId].end()) {
+          std::cerr << "Error: should not be missing data here " << curPos.primaryBlockId << ":" << curPos.secondaryBlockId << ":" << curPos.nucPosition << ":" << curPos.nucGapPosition << std::endl;
+          exit(1);
+        }
+        isMissingDataByBlock[curPosPrimaryBlockId].insert(curPos);
+        // std::cout << "Inserting missing data at " << curPos.primaryBlockId << ":" << curPos.secondaryBlockId << ":" << curPos.nucPosition << ":" << curPos.nucGapPosition << std::endl;
+        isMissingDataBacktrack.emplace_back(std::make_pair(curPos, false), curPosPrimaryBlockId);
+      } else if (originalNucCode == panmanUtils::NucCode::N) {
+        if (isMissingDataByBlock[curPosPrimaryBlockId].find(curPos) == isMissingDataByBlock[curPosPrimaryBlockId].end()) {
+          std::cerr << "Error: should be missing data here " << curPos.primaryBlockId << ":" << curPos.secondaryBlockId << ":" << curPos.nucPosition << ":" << curPos.nucGapPosition << std::endl;
+          exit(1);
+        }
+        isMissingDataByBlock[curPosPrimaryBlockId].erase(curPos);
+        // std::cout << "Erasing missing data at " << curPos.primaryBlockId << ":" << curPos.secondaryBlockId << ":" << curPos.nucPosition << ":" << curPos.nucGapPosition << std::endl;
+        isMissingDataBacktrack.emplace_back(std::make_pair(curPos, true), curPosPrimaryBlockId);
+      }
+
+      nucBacktrack.emplace_back(curPos, originalNucCode);
+      curPos.setSequenceBase(curSequence, panmanUtils::getNucleotideFromCode(curNucCode));
+    }
+  }
+
+  //std::vector<std::tuple<primary block id, secondary block id, old on/off, old strand reversed>>
+  std::vector<std::tuple<int32_t, int32_t, bool, bool>> blockBacktrack;
+
+  for (const auto& curBlockMut : node->blockMutation) {
+    int32_t primaryBlockId = curBlockMut.primaryBlockId;
+    int32_t secondaryBlockId = curBlockMut.secondaryBlockId;
+    bool oldStrand;
+    bool oldMut;
+    if (curBlockMut.isInsertion()) {
+      if (curBlockMut.secondaryBlockId != -1) {
+        oldStrand = blockStrand[primaryBlockId].second[secondaryBlockId];
+        oldMut = blockExists[primaryBlockId].second[secondaryBlockId];
+        blockExists[primaryBlockId].second[secondaryBlockId] = true;
+        blockStrand[primaryBlockId].second[secondaryBlockId] = !curBlockMut.inversion;
+      } else {
+        oldStrand = blockStrand[primaryBlockId].first;
+        oldMut = blockExists[primaryBlockId].first;
+        blockExists[primaryBlockId].first = true;
+        blockStrand[primaryBlockId].first = !curBlockMut.inversion;
+      }
+    } else if (curBlockMut.isDeletion()) {
+      if (curBlockMut.secondaryBlockId != -1) {
+        oldStrand = blockStrand[primaryBlockId].second[secondaryBlockId];
+        oldMut = blockExists[primaryBlockId].second[secondaryBlockId];
+        blockExists[primaryBlockId].second[secondaryBlockId] = false;
+        blockStrand[primaryBlockId].second[secondaryBlockId] = true;
+      } else {
+        oldStrand = blockStrand[primaryBlockId].first;
+        oldMut = blockExists[primaryBlockId].first;
+        blockExists[primaryBlockId].first = false;
+        blockStrand[primaryBlockId].first = true;
+      }
+
+    } else if (curBlockMut.isSimpleInversion()) {
+      if (curBlockMut.secondaryBlockId != -1) {
+        oldStrand = blockStrand[primaryBlockId].second[secondaryBlockId];
+        oldMut = blockExists[primaryBlockId].second[secondaryBlockId];
+        blockStrand[primaryBlockId].second[secondaryBlockId] = !oldStrand;
+      } else {
+        oldStrand = blockStrand[primaryBlockId].first;
+        oldMut = blockExists[primaryBlockId].first;
+        blockStrand[primaryBlockId].first = !oldStrand;
+      }
+    } 
+    blockBacktrack.emplace_back(primaryBlockId, secondaryBlockId, oldMut, oldStrand);
+  }
+
+  size_t curNodeMissingData = 0;
+  for (int i = 0; i < blockExists.size(); i++) {
+    if (blockExists[i].first) {
+      for (const auto& curPos: isMissingDataByBlock[i]) {
+        missingDataByCoordinate[curPos].push_back(node);
+        curNodeMissingData++;
+      }
+    }
+  }
+
+  if (node->parent != nullptr) {
+    // std::cout << "DFS index: " << dfsIndex << " " << node->identifier << " parent:" << node->parent->identifier << " missing data: " << curNodeMissingData << std::endl;
+  } else {
+    // std::cout << "DFS index: " << dfsIndex << " " << node->identifier << std::endl;
+  }
+
+  for (auto child: node->children) {
+    dfsIndex++;
+    missingDataSummaryHelper(child, dfsIndex, curSequence, blockExists, blockStrand, isMissingDataByBlock, missingDataByCoordinate, subsitutionsToMissingData);
+  }
+
+  // Undo missing data before passing back up the tree
+  for (const auto& [curBacktrackInfo, primaryBlockId]: isMissingDataBacktrack) {
+    const auto& [curPos, oldIsMissingData] = curBacktrackInfo;
+    if (oldIsMissingData) {
+      if (isMissingDataByBlock[primaryBlockId].find(curPos) != isMissingDataByBlock[primaryBlockId].end()) {
+        std::cerr << "Error: should not be missing data here during backtrack" << std::endl;
+        exit(1);
+      }
+      // std::cout << "Backtracking: inserting missing data at " << curPos.primaryBlockId << ":" << curPos.secondaryBlockId << ":" << curPos.nucPosition << ":" << curPos.nucGapPosition << std::endl;
+      isMissingDataByBlock[primaryBlockId].insert(curPos);
+    } else {
+      if (isMissingDataByBlock[primaryBlockId].find(curPos) == isMissingDataByBlock[primaryBlockId].end()) {
+        std::cerr << "Error: should be missing data here during backtrack" << std::endl;
+        exit(1);
+      }
+      // std::cout << "Backtracking: erasing missing data at " << curPos.primaryBlockId << ":" << curPos.secondaryBlockId << ":" << curPos.nucPosition << ":" << curPos.nucGapPosition << std::endl;
+      isMissingDataByBlock[primaryBlockId].erase(curPos);
+    }
+  }
+
+  // Undo mutations before passing back up the tree
+  for (const auto& [curPos, originalNucCode]: nucBacktrack) {
+    curPos.setSequenceBase(curSequence, panmanUtils::getNucleotideFromCode(originalNucCode));
+  }
+
+  // Undo block mutations before passing back up the tree
+  for (const auto& [primaryBlockId, secondaryBlockId, oldMut, oldStrand]: blockBacktrack) {
+    if (secondaryBlockId != -1) {
+      blockStrand[primaryBlockId].second[secondaryBlockId] = oldStrand;
+      blockExists[primaryBlockId].second[secondaryBlockId] = oldMut;
+    } else {
+      blockStrand[primaryBlockId].first = oldStrand;
+      blockExists[primaryBlockId].first = oldMut;
+    }
+  }
+}
+
+void panmanUtils::Tree::missingDataSummary(std::ostream& fout) {
+  std::cout << "Generating summary of missing data" << std::endl;
+
+  // object keeping track of types of missing data and counts
+  // Ns, none-N IUPAC ambiguous codes
+  // in chains
+
+  // Likely an unordered_map<Coordinate, std::vector<std::pair<node pointer, dfindex>>>
+  // Summarize total number of Ns, total number of non-N IUPAC ambiguous codes
+  // Summarize the chains, number of chains, length of chains, etc.
+
+  uint32_t dfsIndex = 0;
+  // To keep track of coorrdinates that have missing data at the current node
+  std::vector<std::unordered_set<panmanUtils::Coordinate>> isMissingDataByBlock;
+  // To store all missing data on the entire tree
+  std::unordered_map<panmanUtils::Coordinate, std::vector<panmanUtils::Node*>> missingDataByCoordinate;
+  // To store all substitutions that are to missing data
+  std::vector<std::pair<panmanUtils::Node*, panmanUtils::Coordinate>> subsitutionsToMissingData;
+
+  // Prepare current-state trackers
+  sequence_t curSequence(blocks.size() + 1);
+  blockExists_t blockExists(blocks.size() + 1, {false, {}});
+  blockStrand_t blockStrand(blocks.size() + 1, {true, {}});
+  
+  for (size_t i = 0; i < blockGaps.blockPosition.size(); i++) {
+    curSequence[blockGaps.blockPosition[i]].second.resize(blockGaps.blockGapLength[i]);
+    blockExists[blockGaps.blockPosition[i]].second.resize(blockGaps.blockGapLength[i], false);
+    blockStrand[blockGaps.blockPosition[i]].second.resize(blockGaps.blockGapLength[i], true);
+  }
+
+  int32_t maxBlockId = 0;
+
+  // Create consensus sequence of blocks
+  for(size_t i = 0; i < blocks.size(); i++) {
+    isMissingDataByBlock.push_back(std::unordered_set<panmanUtils::Coordinate>());
+    int32_t primaryBlockId = ((int32_t)blocks[i].primaryBlockId);
+    int32_t secondaryBlockId = ((int32_t)blocks[i].secondaryBlockId);
+
+    maxBlockId = std::max(maxBlockId, primaryBlockId);
+
+    for(size_t j = 0; j < blocks[i].consensusSeq.size(); j++) {
+      bool endFlag = false;
+      for(size_t k = 0; k < 8; k++) {
+        const int nucCode = (((blocks[i].consensusSeq[j]) >> (4*(7 - k))) & 15);
+
+        if(nucCode == 0) {
+          endFlag = true;
+          break;
+        }
+
+        const char nucleotide = panmanUtils::getNucleotideFromCode(nucCode);
+
+        if(secondaryBlockId != -1) {
+          curSequence[primaryBlockId].second[secondaryBlockId].push_back({nucleotide, {}});
+          if (nucCode == panmanUtils::NucCode::N) {
+            panmanUtils::Coordinate curPos = panmanUtils::Coordinate(curSequence[primaryBlockId].second[secondaryBlockId].size() - 1, -1, primaryBlockId, secondaryBlockId);
+            isMissingDataByBlock[primaryBlockId].insert(curPos);
+          }
+        } else {
+          curSequence[primaryBlockId].first.push_back({nucleotide, {}});
+          if (nucCode == panmanUtils::NucCode::N) {
+            panmanUtils::Coordinate curPos = panmanUtils::Coordinate(curSequence[primaryBlockId].first.size() - 1, -1, primaryBlockId, -1);
+            isMissingDataByBlock[primaryBlockId].insert(curPos);
+          }
+        }
+      }
+
+      if(endFlag) {
+        break;
+      }
+    }
+
+    // End character to incorporate for gaps at the end
+    if(secondaryBlockId != -1) {
+        curSequence[primaryBlockId].second[secondaryBlockId].push_back({'x', {}});
+    } else {
+        curSequence[primaryBlockId].first.push_back({'x', {}});
+    }
+  }
+
+  curSequence.resize(maxBlockId + 1);
+  blockExists.resize(maxBlockId + 1);
+  blockStrand.resize(maxBlockId + 1);
+
+  // Assigning nucleotide gaps in blocks
+  for(size_t i = 0; i < gaps.size(); i++) {
+    int32_t primaryBId = (gaps[i].primaryBlockId);
+    int32_t secondaryBId = (gaps[i].secondaryBlockId);
+
+    for(size_t j = 0; j < gaps[i].nucPosition.size(); j++) {
+      int len = gaps[i].nucGapLength[j];
+      int pos = gaps[i].nucPosition[j];
+      if(secondaryBId != -1) {
+        curSequence[primaryBId].second[secondaryBId][pos].second.resize(len, '-');
+      } else {
+        curSequence[primaryBId].first[pos].second.resize(len, '-');
+      }
+    }
+  }
+
+  // DFS to fill missingData
+  missingDataSummaryHelper(root, dfsIndex, curSequence, blockExists, blockStrand, isMissingDataByBlock, missingDataByCoordinate, subsitutionsToMissingData);
+
+
+  // Print out missing data summary
+  fout << "Missing data summary:" << std::endl;
+  fout << "Total number of substitutions/indels to missing data: " << subsitutionsToMissingData.size() << std::endl;
+  size_t totalMissingData = 0;
+  for (const auto& [curPos, nodes]: missingDataByCoordinate) {
+    totalMissingData += nodes.size();
+  }
+  fout << "Total number of missing data: " << totalMissingData << std::endl;
+
+  std::unordered_map<std::string, size_t> missingDataCountsByNode;
+  std::unordered_map<panmanUtils::Coordinate, size_t> missingDataCountsByCoordinate;
+  for (const auto& [curPos, nodes]: missingDataByCoordinate) {
+    for (const auto& node: nodes) {
+      missingDataCountsByNode[node->identifier]++;
+    }
+    missingDataCountsByCoordinate[curPos] = nodes.size();
+  }
+
+  // Convert maps to vectors
+  std::vector<std::pair<std::string, size_t>> missingDataCountsByNodeVec(missingDataCountsByNode.begin(), missingDataCountsByNode.end());
+  std::vector<std::pair<panmanUtils::Coordinate, size_t>> missingDataCountsByCoordinateVec(missingDataCountsByCoordinate.begin(), missingDataCountsByCoordinate.end());
+
+  // Sort vectors by count in descending order
+  std::sort(missingDataCountsByNodeVec.begin(), missingDataCountsByNodeVec.end(), [](const auto& a, const auto& b) {
+    return a.second > b.second;
+  });
+
+  std::sort(missingDataCountsByCoordinateVec.begin(), missingDataCountsByCoordinateVec.end(), [](const auto& a, const auto& b) {
+    return a.second > b.second;
+  });
+
+  // Print top 10 nodes with the most missing data
+  fout << "Top 10 nodes with the most missing data:" << std::endl;
+  for (size_t i = 0; i < std::min(size_t(10), missingDataCountsByNodeVec.size()); ++i) {
+    fout << "Node " << missingDataCountsByNodeVec[i].first << " has " << missingDataCountsByNodeVec[i].second << " missing data" << std::endl;
+  }
+
+
+  // Print top 10 coordinates with the most missing data
+  fout << "Top 10 coordinates with the most missing data:" << std::endl;
+  for (size_t i = 0; i < std::min(size_t(10), missingDataCountsByCoordinateVec.size()); ++i) {
+    const auto& coord = missingDataCountsByCoordinateVec[i].first;
+    fout << "Coordinate " << coord.primaryBlockId << ":" << coord.secondaryBlockId << ":" << coord.nucPosition << ":" << coord.nucGapPosition << " has " << missingDataCountsByCoordinateVec[i].second << " missing data" << std::endl;
+  }
+
+  // Group all the nodes for each coordinate by connected components
+  std::vector<std::pair<panmanUtils::Coordinate, std::vector<std::vector<panmanUtils::Node*>>>> missingDataByCoordinateVec;
+  for (const auto& [curPos, nodes]: missingDataByCoordinate) {
+    std::vector<std::vector<panmanUtils::Node*>> connectedComponents;
+    std::unordered_set<panmanUtils::Node*> visited;
+    
+    // DFS function to find connected components
+    std::function<void(panmanUtils::Node*, std::vector<panmanUtils::Node*>&)> dfs = 
+      [&](panmanUtils::Node* node, std::vector<panmanUtils::Node*>& component) {
+        if (visited.find(node) != visited.end()) {
+          return;
+        }
+        
+        visited.insert(node);
+        component.push_back(node);
+        
+        // Check parent if it's in the original list
+        if (node->parent != nullptr && 
+            std::find(nodes.begin(), nodes.end(), node->parent) != nodes.end()) {
+          dfs(node->parent, component);
+        }
+        
+        // Check children if they're in the original list
+        for (auto& child : node->children) {
+          if (std::find(nodes.begin(), nodes.end(), child) != nodes.end()) {
+            dfs(child, component);
+          }
+        }
+      };
+    
+    // Process each node in the list
+    for (auto* node : nodes) {
+      if (visited.find(node) == visited.end()) {
+        std::vector<panmanUtils::Node*> component;
+        dfs(node, component);
+        connectedComponents.push_back(component);
+      }
+    }
+    
+    missingDataByCoordinateVec.push_back({curPos, connectedComponents});
+  }
+
+  std::unordered_map<size_t, size_t> componentSizeCounts;
+  for (const auto& [coordinate, components] : missingDataByCoordinateVec) {
+    for (const auto& component : components) {
+      componentSizeCounts[component.size()]++;
+    }
+  }
+
+  std::vector<std::pair<size_t, size_t>> componentSizeCountsVec(componentSizeCounts.begin(), componentSizeCounts.end());
+  std::sort(componentSizeCountsVec.begin(), componentSizeCountsVec.end(), [](const auto& a, const auto& b) {
+    return a.first < b.first;
+  });
+
+  fout << "Connected component size distribution:" << std::endl;
+  for (const auto& [size, count] : componentSizeCountsVec) {
+    fout << size << " " << count << std::endl;
+  }
+
+}

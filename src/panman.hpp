@@ -324,10 +324,10 @@ struct Coordinate {
 
     // Create a Coordinate by position
     Coordinate(int nucPosition, int nucGapPosition, int primaryBlockId, int secondaryBlockId) {
-        nucPosition = nucPosition;
-        nucGapPosition = nucGapPosition;
-        primaryBlockId = primaryBlockId;
-        secondaryBlockId = secondaryBlockId;
+        this->nucPosition = nucPosition;
+        this->nucGapPosition = nucGapPosition;
+        this->primaryBlockId = primaryBlockId;
+        this->secondaryBlockId = secondaryBlockId;
     }
 
     // Create a Coordinate with an offset
@@ -846,6 +846,8 @@ class Tree {
     void protoMATToTree(const panman::Tree::Reader& mainTree);
     void protoMATToTree(const panmanOld::tree& mainTree);
 
+    // Print out missing data summary
+    void missingDataSummary(std::ostream& fout);
     // Impute all Ns in the Tree (meant for external use)
     void imputeNs(int allowedIndelDistance);
     // Move "toMove" to be a child of "newParent", with mutations "newMuts"
