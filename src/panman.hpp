@@ -23,6 +23,26 @@
 
 namespace panmanUtils {
 
+// 4-bit int nucleotide codes
+enum NucCode {
+    A = 1,
+    C = 2,
+    G = 4,
+    T = 8,
+    R = 5,
+    Y = 10,
+    S = 6,
+    W = 9,
+    K = 12,
+    M = 3,
+    B = 14,
+    D = 13,
+    H = 11,
+    V = 7,
+    N = 15,
+    MISSING = 0
+};
+
 enum NucMutationType {
     // Nucleotide Substutution
     NS = 0,
@@ -60,6 +80,9 @@ struct NucMut {
     uint8_t mutInfo;
     uint32_t nucs;
 
+    // Default constructor
+    NucMut() {}
+
     // Create SNP mutation for MSA (optimized for memory)
     NucMut( const std::tuple< int, int8_t, int8_t>& mutationInfo ) {
         // primaryBlockId, secondaryBlockId, pos, gapPos, type, char
@@ -68,7 +91,7 @@ struct NucMut {
         nucPosition = std::get<0>(mutationInfo);
         nucGapPosition = -1;
         mutInfo = (int)std::get<1>(mutationInfo) + (1 << 4);
-        nucs = ((int)std::get<2>(mutationInfo) << 20);
+        setSingleNucCode(std::get<2>(mutationInfo));
     }
     
     // Create SNP mutation
@@ -79,7 +102,7 @@ struct NucMut {
         nucPosition = std::get<2>(mutationInfo);
         nucGapPosition = std::get<3>(mutationInfo);
         mutInfo = std::get<4>(mutationInfo) + (1 << 4);
-        nucs = (std::get<5>(mutationInfo) << 20);
+        setSingleNucCode(std::get<5>(mutationInfo));
     }
 
     // Create non-SNP mutations from SNP mutations at consecutive positions for MSA
@@ -116,7 +139,7 @@ struct NucMut {
 
         nucs = 0;
         for(int i = start; i < end; i++) {
-            nucs += (std::get<2>(mutationArray[i]) << (4*(5-(i - start))));
+            addNucCode(std::get<2>(mutationArray[i]), i - start);
         }
 
         // if (nucPosition == 0){
@@ -161,7 +184,7 @@ struct NucMut {
 
         nucs = 0;
         for(int i = start; i < end; i++) {
-            nucs += (std::get<5>(mutationArray[i]) << (4*(5-(i - start))));
+            addNucCode(std::get<5>(mutationArray[i]), i - start);
         }
     }
 
@@ -206,7 +229,200 @@ struct NucMut {
         }
     }
 
+    // Subset a SNP from an MNP
+    NucMut(const NucMut& other, int i) {
+        primaryBlockId = other.primaryBlockId;
+        secondaryBlockId = other.secondaryBlockId;
+        mutInfo = panmanUtils::NucMutationType::NSNPS + (1 << 4);
+        // Extract one nucleotide, then set it as the only one
+        setSingleNucCode(other.getNucCode(i));
+
+        // If gap=-1 then increment nucPosition, otherwise increment nucGapPosition
+        if (other.nucGapPosition == -1) {
+            nucPosition = other.nucPosition + i;
+            nucGapPosition = other.nucGapPosition;
+        } else {
+            nucPosition = other.nucPosition;
+            nucGapPosition = other.nucGapPosition + i;
+        }
+    }
+
+    // Get # of nucleotides
+    int length() const {
+        return (mutInfo >> 4);
+    }
+
+    // Get mutation type
+    uint32_t type() const {
+        return (mutInfo & 0x7);
+    }
+
+    // Get ith nucleotide code
+    int getNucCode(int i) const {
+        return (nucs >> (4*(5-i))) & 0xF;
+    }
+
+    // Get first nucleotide code (only nuc for NSNPX types)
+    int getFirstNucCode() const {
+        return getNucCode(0);
+    }
     
+    // Set ith nucleotide code
+    void addNucCode(int8_t newNuc, int i) {
+        nucs += (newNuc << (4*(5-i)));
+    }
+
+    void changeNucCode(int8_t newNuc, int i) {
+        int oldCode = getNucCode(i);
+        nucs -= (oldCode << (4*(5-i)));
+        addNucCode(newNuc, i);
+    }
+
+    // Set to have a single nucleotide (for NSNPX types)
+    void setSingleNucCode(int8_t newNuc) {
+        nucs = 0;
+        addNucCode(newNuc, 0);
+    }
+
+    // Is this mutation either kind of substitution?
+    bool isSubstitution() const {
+        return (type() == panmanUtils::NucMutationType::NSNPS
+                || type() == panmanUtils::NucMutationType::NS);
+    }
+
+    // Is this mutation either kind of deletion?
+    bool isDeletion() const {
+        return (type() == panmanUtils::NucMutationType::NSNPD
+                || type() == panmanUtils::NucMutationType::ND);
+    }
+    
+    // Is this mutation either kind of insertion?
+    bool isInsertion() const {
+        return (type() == panmanUtils::NucMutationType::NSNPI
+                || type() == panmanUtils::NucMutationType::NI);
+    }
+
+    bool operator==(const NucMut& other) const {
+        return nucPosition == other.nucPosition &&
+               nucGapPosition == other.nucGapPosition &&
+               primaryBlockId == other.primaryBlockId &&
+               secondaryBlockId == other.secondaryBlockId &&
+               mutInfo == other.mutInfo &&
+               nucs == other.nucs;
+    }
+};
+
+// Struct for representing a PanMAT coordinate
+struct Coordinate {
+    int32_t nucPosition;
+    int32_t nucGapPosition;
+    int32_t primaryBlockId;
+    int32_t secondaryBlockId;
+
+    // Default constructor
+    Coordinate() {}
+
+    // Create a Coordinate by position
+    Coordinate(int nucPosition, int nucGapPosition, int primaryBlockId, int secondaryBlockId) {
+        nucPosition = nucPosition;
+        nucGapPosition = nucGapPosition;
+        primaryBlockId = primaryBlockId;
+        secondaryBlockId = secondaryBlockId;
+    }
+
+    // Create a Coordinate with an offset
+    Coordinate(const NucMut& nm, int offset) {
+        nucPosition = nm.nucPosition;
+        nucGapPosition = nm.nucGapPosition;
+        primaryBlockId = nm.primaryBlockId;
+        secondaryBlockId = nm.secondaryBlockId;
+        moveForward(offset);
+    }
+
+    // Create a Coordinate copying a NucMut
+    Coordinate(const NucMut& nm) : Coordinate(nm, 0) {}
+
+    // Get base corresponding to this Coordinate's position within a sequence_t
+    char getSequenceBase(const sequence_t& seq) const {
+        if(secondaryBlockId != -1) {
+            if(nucGapPosition != -1) {
+                return seq[primaryBlockId].second[secondaryBlockId][nucPosition].second[nucGapPosition];
+            } else {
+                return seq[primaryBlockId].second[secondaryBlockId][nucPosition].first;
+            }
+        } else {
+            if(nucGapPosition != -1) {
+                return seq[primaryBlockId].first[nucPosition].second[nucGapPosition];
+            } else {
+                return seq[primaryBlockId].first[nucPosition].first;
+            }
+        }
+    }
+
+    // Set base corresponding to this Coordinate's position within a sequence_t
+    void setSequenceBase(sequence_t& seq, char newNuc) const {
+        if(secondaryBlockId != -1) {
+            if(nucGapPosition != -1) {
+                seq[primaryBlockId].second[secondaryBlockId][nucPosition].second[nucGapPosition] = newNuc;
+            } else {
+                seq[primaryBlockId].second[secondaryBlockId][nucPosition].first = newNuc;
+            }
+        } else {
+            if(nucGapPosition != -1) {
+                seq[primaryBlockId].first[nucPosition].second[nucGapPosition] = newNuc;
+            } else {
+                seq[primaryBlockId].first[nucPosition].first = newNuc;
+            }
+        }
+    }
+
+    // Move "offset" steps forward
+    void moveForward(int offset) {
+        if (nucGapPosition == -1) {
+            nucPosition += offset;
+        } else {
+            nucGapPosition += offset;
+        }
+    }
+
+    bool operator==(const Coordinate& other) const {
+        return nucPosition == other.nucPosition &&
+               nucGapPosition == other.nucGapPosition &&
+               primaryBlockId == other.primaryBlockId &&
+               secondaryBlockId == other.secondaryBlockId;
+    }
+};
+
+struct IndelPosition {
+    Coordinate pos;
+    int32_t length;
+
+    // Create an IndelPosition copying a NucMut
+    IndelPosition(const NucMut& nm) {
+        pos = Coordinate(nm);
+        length = nm.length();
+    }
+
+    // Merge "other" if it comes consecutively after this IndelPosition
+    // Returns whether the merge occcurs
+    bool mergeIndels(const NucMut& other) {
+        // Different blocks are obviously nonconsecutive
+        if (pos.primaryBlockId != other.primaryBlockId || pos.secondaryBlockId != other.secondaryBlockId) {
+            return false;
+        }
+        
+        // If gap=-1 then increment nucPosition, otherwise increment nucGapPosition
+        if ((pos.nucGapPosition == -1 && other.nucPosition - pos.nucPosition == length) ||
+            (pos.nucGapPosition != -1 && other.nucGapPosition - pos.nucGapPosition == length)) {
+            length += other.length();
+            return true;
+        }
+        return false;
+    }
+
+    bool operator==(const IndelPosition& other) const {
+        return pos == other.pos && length == other.length;
+    }
 };
 
 // Struct for representing Block Mutations
@@ -269,7 +485,35 @@ struct BlockMut {
 
     BlockMut() {}
 
-    
+    // Readable way to check if this is an insertion
+    bool isInsertion() const { return blockMutInfo; }
+
+    // Readable way to check if this is a deletion
+    bool isDeletion() const { return !blockMutInfo && !inversion; }
+
+    // Readable way to check if this is a non-insertion inversion
+    bool isSimpleInversion() const { return !blockMutInfo && inversion; }
+
+    // Make this mutation into an insertion, keeping the same block IDs
+    void convertToInsertion(bool inversion) {
+        blockMutInfo = true;
+        inversion = inversion;
+    }
+
+    // Make this mutation into a deletion, keeping the same block IDs
+    void convertToDeletion() {
+        blockMutInfo = false;
+        inversion = false;
+    }
+
+    // Flip this mutation's inversion marker
+    void invert() {
+        inversion = !inversion;
+    }
+
+    uint64_t singleBlockID() const { 
+        return (primaryBlockId << 32) + secondaryBlockId;
+    }
 };
 
 // List of default blocks in the global coordinate system of the PanMAT
@@ -283,6 +527,10 @@ struct Block {
     Block(size_t primaryBlockId, std::string seq);
     // seq is a compressed form of the sequence where each nucleotide is stored in 4 bytes
     Block(int32_t primaryBlockId, int32_t secondaryBlockId, const std::vector< uint32_t >& seq);  
+
+    uint64_t singleBlockID() const { 
+        return (primaryBlockId << 32) + secondaryBlockId;
+    }
 };
 
 // List of gaps in the global coordinate system of the PanMAT
@@ -319,8 +567,68 @@ class Node {
 
     Node(std::string id, float len);
     Node(std::string id, Node* par, float len);
+    // Copy another node, except for its ID, children, & annotations
+    Node(Node* other, std::string id);
+
+    // Disown/remove a child from .children
+    void removeChild(Node* child) {
+        children.erase(std::find(children.begin(), children.end(), child));
+    }
+
+    // Rewire pointers so node becomes a child of newParent, returning the old parent
+    void changeParent(Node* newParent) {
+        Node* oldParent = parent;
+        // Remove node from old parent's children list
+        if (oldParent != nullptr) oldParent->removeChild(this);
+
+        // Add node to new parent's children
+        parent = newParent;
+        if (newParent != nullptr) newParent->children.emplace_back(this);
+    }
+
+    bool isDescendant(const std::unordered_set<Node*>& others) {
+        if (parent == nullptr) {
+            return false;
+        } else if (others.find(parent) != others.end()) {
+            return true;
+        } else {
+            return parent->isDescendant(others);
+        }
+    }
 };
 
+struct MutationList {
+    std::vector<NucMut> nucMutation;
+    std::vector<BlockMut> blockMutation;
+
+    // Copy mutations from a node
+    MutationList(Node* node) {
+        nucMutation = node->nucMutation;
+        blockMutation = node->blockMutation;       
+    }
+
+    // Copy constructor
+    MutationList(const MutationList& other) {
+        nucMutation = other.nucMutation;
+        blockMutation = other.blockMutation;
+    }
+
+    // Default constructor (empty MutationList)
+    MutationList() {}
+
+    // Convert mutations to their exact inverse, i.e. mutations from child to parent
+    void invertMutations(const std::unordered_map< Coordinate, int8_t >& originalNucs,
+        const std::unordered_map< uint64_t, bool >& wasBlockInv);
+
+    // Concatenate another MutationList to the end of this one
+    MutationList concat(const MutationList& other) const {
+        MutationList newMuts = *this;
+        newMuts.nucMutation.insert(newMuts.nucMutation.end(), other.nucMutation.begin(), other.nucMutation.end());
+        newMuts.blockMutation.insert(newMuts.blockMutation.end(), other.blockMutation.begin(), other.blockMutation.end());
+        return newMuts;
+    }
+
+};
 
 // Data structure to represent a PangenomeMAT
 class Tree {
@@ -400,6 +708,8 @@ class Tree {
 
     // Iterate through mutations and combine mutations at the same position
     std::vector< NucMut > consolidateNucMutations(const std::vector< NucMut >& nucMutation);
+    // Iterate through mutations and combine mutations for the same block
+    std::vector<BlockMut> consolidateBlockMutations(const std::vector<BlockMut>& blockMutation);
 
     // Used to confirm that consolidateNucMutations worked correctly. Can be removed in
     // production
@@ -415,6 +725,8 @@ class Tree {
     void dfsExpansion(Node* node, std::vector< Node* >& vec);
     Node* transformHelper(Node* node);
     void adjustLevels(Node* node);
+    // Fix .level attributes, as well as .m_maxDepth
+    void fixLevels(Node* node, size_t& numLeaves, size_t& totalLeafDepth);
 
     // Check if tree is a polytomy
     bool hasPolytomy(Node* node);
@@ -431,6 +743,61 @@ class Tree {
     bool panMATCoordinateLeq(const std::tuple< int, int, int, int >& coor1,
                              const std::tuple< int, int, int, int >& coor2, bool strand);
 
+    // Functions for N imputation
+    // Fill "substitutions" and "insertions" with all mutations TO N
+    // "substitutions" beomces a vector of (node ID, substitution with Ns) pairs
+    // "insertions" becomes a map of {node ID : {insertion position : number of Ns}}
+    // "originalNucs" becomes a map of {node ID : {coordianate : nucleotide}} for original nucleotides of subsitutions/deletions
+    // "wasBlockInv" becomes a map of {node ID : {block IDs : is inversion}} for original block states of deletions
+    const void fillImputationLookupTables(
+        std::vector< std::pair < std::string, NucMut > >& substitutions,
+        std::unordered_map< std::string, std::unordered_map< IndelPosition, int32_t > >& insertions,
+        std::unordered_map< std::string, std::unordered_map< Coordinate, int8_t > >& originalNucs,
+        std::unordered_map< std::string, std::unordered_map< uint64_t, bool > >& wasBlockInv);
+    // Run fillImputationLookupTables for subtree with root "node"
+    // Keep track of "curNucs" map with {coordinate : nucleotide} at "node", used for "originalNucs"
+    // Keep track of "isInv" map with {block IDs : is inversion} at "node", used for "wasBlockInv"
+    const void fillImputationLookupTablesHelper(Node* node,
+        std::vector< std::pair < std::string, NucMut > >& substitutions,
+        std::unordered_map< std::string, std::unordered_map< IndelPosition, int32_t > >& insertions,
+        std::unordered_map< std::string, std::unordered_map< Coordinate, int8_t > >& originalNucs,
+        std::unordered_map< std::string, std::unordered_map< uint64_t, bool > >& wasBlockInv,
+        sequence_t& curSequence, blockExists_t& blockStrand);
+    // Fill "substitutions", "insertions", and "originalNucs" using nucleotide mutations in "node"
+    // Keep track of "curNucs" map with {coordinate : nucleotide} at "node", used for "originalNucs"
+    const void fillNucleotideLookupTables(Node* node, sequence_t& curSequence,
+        std::vector< std::pair < std::string, NucMut > >& substitutions,
+        std::unordered_map< std::string, std::unordered_map< IndelPosition, int32_t > >& insertions,
+        std::unordered_map< std::string, std::unordered_map< Coordinate, int8_t > >& originalNucs);
+    // Fill "wasBlockInv" using block mutations in "node"
+    // Keep track of "isInv" map with {block IDs : is inversion} at "node", used for "wasBlockInv"
+    const void fillBlockLookupTables(Node* node, blockExists_t& blockStrand,
+        std::unordered_map< std::string, std::unordered_map< uint64_t, bool > >& wasBlockInv);
+    // Impute a specific substitution in "nucMutation", "mutToN" which mutated TO N
+    // Erase mutation for maximum parsimony. Break up partially-N MNPs if needed
+    // Returns the number of Ns imputed
+    const int imputeSubstitution(std::vector<NucMut>& nucMutation, const NucMut& mutToN);
+    // Impute all substitutions with Ns within "nucMutation"
+    const void imputeAllSubstitutionsWithNs(std::vector<NucMut>& nucMutation);
+    // Tries to find a similar insertion for each in "mutsToN" within "allowedDistance" branch length from "node"
+    // Uses "originalNucs" and "wasBlockInv" maps to help invert mutations when necessary
+    // Searches in all directions but direct descendants
+    // Calculates necessary change in mutations to move there and if moving would increase parsimony
+    // Returns a pair of (new parent, new mutations) for a parsimony improvement
+    const std::pair< Node*, MutationList > findInsertionImputationMove(
+        Node* node, const std::vector<IndelPosition>& mutsToN, int allowedDistance,
+        const std::unordered_map< std::string, std::unordered_map< IndelPosition, int32_t > >& insertions,
+        const std::unordered_map< std::string, std::unordered_map< Coordinate, int8_t > >& originalNucs,
+        const std::unordered_map< std::string, std::unordered_map< uint64_t, bool > >& wasBlockInv);
+    // Find insertions the size/position of "mutToN" within "allowedDistance" branch length from "node"
+    // Uses "originalNucs" and "wasBlockInv" maps to help invert mutations when necessary
+    // Don't search down the edge to "ignore"
+    // Relies on a precomputed map of nodes to insertion positions                   
+    const std::vector<std::pair< Node*, MutationList >> findNearbyInsertions(
+        Node* node, const std::vector<IndelPosition>& mutsToN, int allowedDistance, Node* ignore,
+        const std::unordered_map< std::string, std::unordered_map< IndelPosition, int32_t > >& insertions,
+        const std::unordered_map< std::string, std::unordered_map< Coordinate, int8_t > >& originalNucs,
+        const std::unordered_map< std::string, std::unordered_map< uint64_t, bool > >& wasBlockInv);
 
     std::string newInternalNodeId() {
         return "node_" + std::to_string(++m_currInternalNode);
@@ -478,6 +845,12 @@ class Tree {
 
     void protoMATToTree(const panman::Tree::Reader& mainTree);
     void protoMATToTree(const panmanOld::tree& mainTree);
+
+    // Impute all Ns in the Tree (meant for external use)
+    void imputeNs(int allowedIndelDistance);
+    // Move "toMove" to be a child of "newParent", with mutations "newMuts"
+    // Return whether the move was possible without making a loop
+    bool moveNode(Node* toMove, Node* newParent, MutationList newMuts);
 
     // Fitch Algorithm on Nucleotide mutations
     int nucFitchForwardPass(Node* node, std::unordered_map< std::string, int >& states, int refState=-1);
@@ -571,14 +944,16 @@ class Tree {
     std::string getNewickString(Node* node);
     std::string getStringFromReference(std::string reference, bool aligned = true,
                                        bool incorporateInversions=true);
-    void getSequenceFromReference(sequence_t& sequence, blockExists_t& blockExists,
-                                  blockStrand_t& blockStrand, std::string reference, bool rotateSequence = false,
-                                  int* rotIndex = nullptr);
+    const void getSequenceFromReference(sequence_t& sequence, blockExists_t& blockExists,
+                                        blockStrand_t& blockStrand, std::string reference, bool rotateSequence = false,
+                                        int* rotIndex = nullptr);
 
     // For each node in the tree, print mutations with respect to the root node to the
     // output file
     void printMutations(std::ostream& fout);
     void printMutationsNew(std::ostream& fout);
+    void printMutationsNew(std::ostream& fout, std::string& referenceString);
+    void printMutationsNew(std::ostream& fout, std::vector<std::string>& nodes, std::string& referenceString);
     void printNodePaths(std::ostream& fout);
 
     void getBlockSequenceFromReference(block_t& sequence, bool& blockExists,
@@ -908,3 +1283,25 @@ class TreeGroup {
 };
 
 };
+
+namespace std {
+    template <>
+    struct hash<panmanUtils::Coordinate> {
+        size_t operator()(const panmanUtils::Coordinate& coord) const {
+            size_t h1 = std::hash<int32_t>{}(coord.nucPosition);
+            size_t h2 = std::hash<int32_t>{}(coord.nucGapPosition);
+            size_t h3 = std::hash<int32_t>{}(coord.primaryBlockId);
+            size_t h4 = std::hash<int32_t>{}(coord.secondaryBlockId);
+            return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
+        }
+    };
+    
+    template <>
+    struct hash<panmanUtils::IndelPosition> {
+        size_t operator()(const panmanUtils::IndelPosition& indelPos) const {
+            size_t h1 = std::hash<panmanUtils::Coordinate>{}(indelPos.pos);
+            size_t h2 = std::hash<int32_t>{}(indelPos.length);
+            return h1 ^ (h2 << 4);
+        }
+    };
+}
