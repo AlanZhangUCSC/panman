@@ -273,11 +273,111 @@ void panmanUtils::Tree::printSummary(std::ostream &out) {
 }
 
 void panmanUtils::Tree::printBlockRanges(std::ostream &out) {
-  size_t currentBlockBeg = 0;
-  size_t currentBlockEnd = 0;
-  for(auto i=0; i<blocks.size(); i++) {
-    currentBlockEnd = currentBlockBeg + blocks[i].consensusSeq.size() - 1;
+  // Get block sequnece of the Tip
+  std::vector< bool >  blockSequence(blocks.size() + 1, false, {});
+
+  // Blocks length
+  std::unordered_map<int, int> blockLengths;
+
+  // Expanding blocks only if exist in tip 
+  std::vector< std::vector< std::pair< char, std::vector< char > > > > sequence(blocks.size() + 1);
+  std::vector< bool >  blockExists(blocks.size() + 1, false, {});
+  std::vector< bool >  blockStrand(blocks.size() + 1, true, {});
+
+
+  int32_t maxBlockId = 0;
+
+  // Create consensus sequence of blocks
+  for(size_t i = 0; i < blocks.size(); i++) {
+    int32_t primaryBlockId = ((int32_t)blocks[i].primaryBlockId);
+    blockLengths[primaryBlockId] = 0;
+    maxBlockId = std::max(maxBlockId, primaryBlockId);
+    if (blockSequence[primaryBlockId]) {
+      // int len = 0;
+      for(size_t j = 0; j < blocks[i].consensusSeq.size(); j++) {
+        bool endFlag = false;
+        for(size_t k = 0; k < 8; k++) {
+          const int nucCode = (((blocks[i].consensusSeq[j]) >> (4*(7 - k))) & 15);
+
+          if(nucCode == 0) {
+            endFlag = true;
+            break;
+          }
+          // len++;
+          const char nucleotide = panmanUtils::getNucleotideFromCode(nucCode);
+          sequence[primaryBlockId].push_back({nucleotide, {}});
+        }
+
+        if(endFlag) {
+          break;
+        }
+      }
+      // End character to incorporate for gaps at the end
+      sequence[primaryBlockId].push_back({'x', {}});
+      // blockLengths[primaryBlockId] += len;
+    } else {
+      int len = 0;
+      for(size_t j = 0; j < blocks[i].consensusSeq.size(); j++) {
+        bool endFlag = false;
+        for(size_t k = 0; k < 8; k++) {
+          const int nucCode = (((blocks[i].consensusSeq[j]) >> (4*(7 - k))) & 15);
+          if(nucCode == 0) {
+            endFlag = true;
+            break;
+          }
+          len++;
+          const char nucleotide = panmanUtils::getNucleotideFromCode(nucCode);
+        }
+
+        if(endFlag) {
+          break;
+        }
+      }
+      blockLengths[primaryBlockId] += len;
+    }
+  }
+
+  sequence.resize(maxBlockId + 1);
+  blockExists.resize(maxBlockId + 1);
+  blockStrand.resize(maxBlockId + 1);
+
+  // Assigning nucleotide gaps in blocks
+  for(size_t i = 0; i < gaps.size(); i++) {
+    int32_t primaryBId = (gaps[i].primaryBlockId);
+    int32_t secondaryBId = (gaps[i].secondaryBlockId);
+    if (blockSequence[primaryBId]){
+      for(size_t j = 0; j < gaps[i].nucPosition.size(); j++) {
+        int len = gaps[i].nucGapLength[j];
+        int pos = gaps[i].nucPosition[j];
+        sequence[primaryBId][pos].second.resize(len, '-');
+        // blockLengths[primaryBId] += len;
+      }
+    } else {
+      int len=0;
+      for(size_t j = 0; j < gaps[i].nucPosition.size(); j++) {
+        len += gaps[i].nucGapLength[j];
+      }
+      blockLengths[primaryBId] += len;
+    }
+  }
+
+  int currentBlockBeg = 0;
+  int currentBlockEnd = 0;
+
+  std::vector<std::pair<int, int>> blockLengthsVec;
+  for (const auto& entry : blockLengths) {
+    blockLengthsVec.push_back(std::make_pair(entry.first, entry.second));
+  }
+
+  std::sort(blockLengthsVec.begin(), blockLengthsVec.end(), [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
+    return a.first < b.first;
+  });
+
+  for(auto i=0; i<blockLengthsVec.size(); i++) {
+    currentBlockEnd = currentBlockBeg + blockLengthsVec[i].second - 1;
     out << currentBlockBeg << "\t" << currentBlockEnd << "\n";
     currentBlockBeg = currentBlockEnd + 1;
   }
+
+
 }

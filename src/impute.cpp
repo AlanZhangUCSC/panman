@@ -667,7 +667,9 @@ void panmanUtils::Tree::missingDataSummary(std::ostream& fout) {
 
   // Group all the nodes for each coordinate by connected components
   std::vector<std::pair<panmanUtils::Coordinate, std::vector<std::vector<panmanUtils::Node*>>>> missingDataByCoordinateVec;
+  size_t numProcessed = 0;
   for (const auto& [curPos, nodes]: missingDataByCoordinate) {
+    std::unordered_set<panmanUtils::Node*> nodesSet(nodes.begin(), nodes.end());
     std::vector<std::vector<panmanUtils::Node*>> connectedComponents;
     std::unordered_set<panmanUtils::Node*> visited;
     
@@ -683,13 +685,13 @@ void panmanUtils::Tree::missingDataSummary(std::ostream& fout) {
         
         // Check parent if it's in the original list
         if (node->parent != nullptr && 
-            std::find(nodes.begin(), nodes.end(), node->parent) != nodes.end()) {
+            nodesSet.find(node->parent) != nodesSet.end()) {
           dfs(node->parent, component);
         }
         
         // Check children if they're in the original list
         for (auto& child : node->children) {
-          if (std::find(nodes.begin(), nodes.end(), child) != nodes.end()) {
+          if (nodesSet.find(child) != nodesSet.end()) {
             dfs(child, component);
           }
         }
@@ -705,6 +707,8 @@ void panmanUtils::Tree::missingDataSummary(std::ostream& fout) {
     }
     
     missingDataByCoordinateVec.push_back({curPos, connectedComponents});
+    ++numProcessed;
+    std::cout << "\rProcessed " << numProcessed << " / " << missingDataByCoordinate.size() << " coordinates" << std::flush;
   }
 
   std::unordered_map<size_t, size_t> componentSizeCounts;
